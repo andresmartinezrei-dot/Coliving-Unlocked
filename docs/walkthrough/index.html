@@ -214,6 +214,9 @@ const SAVE_KEY='coliving_walkthrough_v1';
 // Read operator email from URL ?operator= param
 const urlParams=new URLSearchParams(window.location.search);
 const operatorEmail=urlParams.get('operator')||'';
+// Google Apps Script Web App URL — receives report submissions and emails them
+// with embedded photos directly to the operator. Set after deploying Code.gs.
+const REPORT_ENDPOINT='https://script.google.com/macros/s/AKfycbyAa3hwF-ARdTFTPD7v31OU0yRSWYZHYXv3lJ1FORq0zmcNJlU6uJw_fIWW_BE2w6O9/exec';
 
 function saveState(){
   try{
@@ -525,18 +528,53 @@ function showReport(){
   document.getElementById('reportModal').classList.add('open');
 }
 
-function submitReport(){
+function buildReportPayload(){
   const prog=totalProg();
   const now=new Date();
   const dateStr=now.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-  
-  // Build checklist summary
+
+  const sections=SECTIONS.map(sec=>{
+    const numUnits=sec.perUnit?unitCounts[sec.id]:1;
+    const units=[];
+    for(let ui=0;ui<numUnits;ui++){
+      const unitKey=sec.perUnit?ui:'x';
+      const items=sec.items.map((item,i)=>{
+        const k=unitKey+'-'+i;
+        return {
+          item,
+          checked:!!checked[sec.id][k],
+          note:notes[sec.id][k]||'',
+          photos:photos[sec.id][k]||[]
+        };
+      });
+      units.push({unitLabel:sec.perUnit?(sec.unitLabel+' '+(ui+1)):'',items});
+    }
+    return {label:sec.label,icon:sec.icon,units};
+  });
+
+  return {
+    operatorEmail,
+    propName,
+    inspector,
+    dateStr,
+    progDone:prog.done,
+    progTotal:prog.total,
+    progPct:prog.pct,
+    sections
+  };
+}
+
+function mailtoFallback(reason){
+  const prog=totalProg();
+  const now=new Date();
+  const dateStr=now.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+
   let summary='PRE-LAUNCH INSPECTION REPORT\n';
   summary+='========================\n';
   summary+=propName+' — '+dateStr+'\n';
   summary+='Inspector: '+inspector+'\n';
   summary+='Progress: '+prog.done+'/'+prog.total+' items ('+prog.pct+'%)\n\n';
-  
+
   SECTIONS.forEach(sec=>{
     const numUnits=sec.perUnit?unitCounts[sec.id]:1;
     summary+=sec.icon+' '+sec.label.toUpperCase()+'\n';
@@ -552,21 +590,57 @@ function submitReport(){
     }
     summary+='\n';
   });
-  
+
   summary+='\n— Submitted via Coliving Unlocked Pre-Launch Tool';
 
   const to=operatorEmail||prompt('Send report to (operator email):','');
   if(!to){showToast('No email — report not sent','#BA7517');return;}
-  
+
   const subject=encodeURIComponent('[Walkthrough Report] '+propName+' — '+dateStr);
   const body=encodeURIComponent(
+    (reason?'':'')+
     'Hi,\n\nAttached is the pre-launch inspection report for '+propName+'.\n\n'+
     'Please find the full checklist below. Save the PDF from the report screen and attach it to this email.\n\n'+
     summary
   );
-  
+
   window.location.href='mailto:'+to+'?subject='+subject+'&body='+body;
-  showToast('Opening email app...','#1D9E75');
+  showToast(reason||'Opening email app...','#1D9E75');
+}
+
+function submitReport(){
+  const to=operatorEmail;
+  if(!to){
+    // No operator email in the link at all — nothing to send to automatically.
+    mailtoFallback('No operator email in link — using your email app instead');
+    return;
+  }
+
+  if(!REPORT_ENDPOINT||REPORT_ENDPOINT.indexOf('PASTE_YOUR')===0){
+    // Backend not configured yet — fall back to mailto so the tool still works.
+    mailtoFallback();
+    return;
+  }
+
+  showToast('Submitting report…','#378ADD');
+  const payload=buildReportPayload();
+
+  fetch(REPORT_ENDPOINT,{
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids CORS preflight on Apps Script
+    body:JSON.stringify(payload)
+  })
+  .then(r=>r.json())
+  .then(res=>{
+    if(res&&res.ok){
+      showToast('✓ Report sent to operator','#1D9E75');
+    } else {
+      mailtoFallback('Could not auto-submit — using your email app instead');
+    }
+  })
+  .catch(()=>{
+    mailtoFallback('Could not auto-submit — using your email app instead');
+  });
 }
 </script>
 </body>
